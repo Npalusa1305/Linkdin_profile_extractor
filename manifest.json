@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Sales Navigator Lead Extractor",
+  "version": "1.0.2",
+  "description": "Extracts lead data from LinkedIn Sales Navigator search results and exports to CSV.",
+  "permissions": ["storage", "downloads", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://www.linkedin.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Sales Navigator Lead Extractor",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/sales/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://www.linkedin.com/*"]
+    }
+  ]
+}
