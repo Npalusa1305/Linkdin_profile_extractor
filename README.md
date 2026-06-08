@@ -1,113 +1,119 @@
 # Sales Navigator Lead Extractor
 
-A Chrome Manifest V3 extension that captures lead records from LinkedIn Sales
-Navigator pages and exports them as CSV.
+A Chrome Manifest V3 extension for collecting LinkedIn Sales Navigator lead
+records across result pages and exporting them as a formatted Excel workbook.
 
-The extension does not scrape the rendered DOM. Sales Navigator is a client-side
-application whose CSS classes and markup can change often, so this project
-observes the JSON payloads that LinkedIn's own app downloads while you browse.
-Those payloads are parsed into a stable flat lead schema, deduplicated in local
-extension storage, and exported from the popup.
+The extension observes Sales Navigator's own JSON API responses while you browse.
+It does not depend on fragile page markup or randomized CSS classes. Captured
+records are normalized, deduplicated in local extension storage, and exported as
+`.xlsx`.
 
-## What It Does
+## Features
 
-- Injects a page-context network interceptor into Sales Navigator pages.
-- Watches relevant Sales Navigator `fetch` and `XMLHttpRequest` calls.
-- Reads text, `Blob`, and `ArrayBuffer` response bodies.
-- Parses likely lead/profile records out of nested JSON payloads.
-- Normalizes records into a fixed CSV schema.
-- Deduplicates leads by Sales Navigator ID, public profile identifier, or name.
-- Stores captured leads in `chrome.storage.local`.
-- Exports captured leads as UTF-8 CSV through the background service worker.
+- Captures leads from Sales Navigator search/list/result pages.
+- Observes `fetch` and `XMLHttpRequest` responses from the page context.
+- Handles text, `Blob`, and `ArrayBuffer` response bodies.
+- Recursively parses nested Sales Navigator payloads.
+- Deduplicates leads across pages and repeated loads.
+- Collects multiple pages with a user-set page count and delay.
+- Supports continuing from the next page after a completed run.
+- Shows live progress: current page, pages checked, pages with captured leads,
+  total leads, estimate, and next action countdown.
+- Exports a LIX-style formatted Excel workbook with frozen headers, filters,
+  wrapped cells, column widths, and clean borders.
 
 ## Install
 
-1. Open `chrome://extensions` in Chrome or another Chromium browser.
+1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this project folder.
-5. Pin the extension for easier access.
+5. Reload any already-open Sales Navigator tabs.
 
-After updating the code, reload the extension from `chrome://extensions` and
-reload any already-open Sales Navigator tabs. Content scripts are injected when
-matching pages load, so old tabs need a refresh.
+After code changes, reload the unpacked extension in `chrome://extensions` and
+refresh Sales Navigator tabs so the updated content script is injected.
+
+Starting a new **Collect pages** run clears previously captured leads, reloads
+the currently open Sales Navigator page, and begins capture from that page.
 
 ## Use
 
-1. Open a Sales Navigator search, list, or lead results page:
-   `https://www.linkedin.com/sales/...`
-2. Scroll or paginate through results so Sales Navigator loads the lead batches.
-3. Open the extension popup.
-4. Click **Download CSV**.
+1. Open a Sales Navigator page under `https://www.linkedin.com/sales/...`.
+2. Open the extension popup.
+3. Set **Pages to collect**.
+4. Set **Delay (sec)**.
+5. Click **Collect pages**.
+6. When collection is finished, click **Download Excel**.
 
-The popup reads stored leads directly from extension storage. It does not require
-the active tab to answer a popup message before download, which makes the UI more
-reliable when a page was opened before the extension was reloaded.
+To start over without collecting, click **Clear captured data** in the popup.
+
+### Page Collection
+
+**Pages to collect** means the page range to check during the run.
+
+- `1` means check the page currently open.
+- `2` means check the current page plus one Next page.
+- `100` means check up to 100 pages, if Sales Navigator has that many.
+
+The popup remembers the last page count and delay you entered. The default page
+count is 4.
+
+**Collect pages** reloads the currently open Sales Navigator page, clears old
+captured data, and then starts collection from that page. It then advances page
+by page until the requested page count is reached.
+
+**Continue next pages** starts from the next page, useful when the current page
+was already collected or already loaded. For example, after collecting pages
+1-4, enter `4` and click **Continue next pages** to check pages 5-8.
+
+The extension waits between page advances and stops if it cannot find an enabled
+Next control or if the page stops producing a page/content change. The
+**Estimated profiles** number is only a planning estimate based on roughly 25
+profiles per page. The popup shows both **Pages checked** and **Pages with
+captured leads** so you can tell whether a page was visited but produced no new
+records.
+
+During an active page collection run, storage is capped at `Pages to collect *
+25` leads. This keeps a four-page run at 100 rows even if a Sales Navigator
+payload includes an extra lead-like object outside the visible result cards.
+Each checked page can add up to 25 new leads, and rows are exported in the order
+they were captured page by page.
+
+When the requested page range finishes, the extension stays on the final checked
+page and shows that scraping stopped there automatically.
 
 ## Architecture
 
-The extension is split into four execution contexts. This split is important
-because Chrome extensions and web pages run in different JavaScript worlds.
+The extension uses four JavaScript contexts:
 
-| File | Context | Responsibility |
-|------|---------|----------------|
-| `manifest.json` | Chrome extension metadata | Declares MV3 settings, permissions, content script matches, background worker, popup, and web-accessible injected script. |
-| `content.js` | Isolated content-script world on `linkedin.com/sales/*` | Injects `inject.js`, receives page messages, parses records, deduplicates, and writes to `chrome.storage.local`. |
-| `inject.js` | Page JavaScript world | Monkeypatches `fetch` and `XMLHttpRequest` so the extension can observe Sales Navigator API responses. |
-| `popup.html` / `popup.js` | Extension popup | Displays count, reads stored leads, clears storage, builds CSV, and asks the background worker to download. |
-| `background.js` | MV3 service worker | Handles download requests and keeps download behavior independent of the popup lifecycle. |
+| File | Context | Purpose |
+|------|---------|---------|
+| `manifest.json` | Extension manifest | Declares MV3 metadata, permissions, content script, popup, background worker, and injected script access. |
+| `inject.js` | Page world | Wraps the page's `fetch` and `XMLHttpRequest` to observe Sales Navigator API responses. |
+| `content.js` | Isolated content script | Injects `inject.js`, receives page messages, parses payloads, stores records, and runs pagination. |
+| `popup.html` / `popup.js` | Extension popup | Shows controls/progress, reads stored leads, builds Excel, and requests download. |
+| `background.js` | MV3 service worker | Handles ping and download messages, then calls `chrome.downloads.download`. |
 
 ## Data Flow
 
 ```text
 Sales Navigator page
-        |
-        | fetch / XMLHttpRequest responses
-        v
-inject.js
-        |
-        | window.postMessage({ source: "snle-inject", type: "sales-api-response" })
-        v
-content.js
-        |
-        | parse -> normalize -> dedupe
-        v
-chrome.storage.local["snle_leads"]
-        |
-        | popup reads stored records
-        v
-popup.js
-        |
-        | chrome.runtime.sendMessage({ target: "background", action: "download" })
-        v
-background.js
-        |
-        | chrome.downloads.download(...)
-        v
-CSV file
+  -> fetch/XHR response
+  -> inject.js reads JSON body
+  -> window.postMessage(...)
+  -> content.js parses and dedupes records
+  -> chrome.storage.local["snle_leads"]
+  -> popup.js builds .xlsx workbook
+  -> background.js downloads file
 ```
 
-## Why `inject.js` Exists
+Pagination uses the same pipeline. The content script clicks the visible enabled
+Next control, waits for a URL/page change or new captured leads, and then updates
+progress. All pages write into the same deduped storage map.
 
-Chrome content scripts run in an isolated world. They can read the DOM, but they
-cannot directly monkeypatch the page's own `window.fetch` or
-`XMLHttpRequest.prototype` in a way the Sales Navigator app will use.
+## Network Interception
 
-To observe the page's network responses, `content.js` creates a `<script>` tag
-whose source is `chrome.runtime.getURL("inject.js")`. Because `inject.js` runs in
-the page world, it can wrap the same `fetch` and `XMLHttpRequest` objects used by
-Sales Navigator.
-
-The injected script cannot use extension APIs directly, so it forwards parsed JSON
-to the content script with `window.postMessage`.
-
-## Network Interception Design
-
-`inject.js` watches endpoints whose URLs look like Sales Navigator lead/profile
-data calls. The matcher is intentionally substring-based because LinkedIn changes
-endpoint names and query parameters over time.
-
-Current patterns include:
+`inject.js` watches Sales Navigator-like endpoints, including:
 
 - `salesApiLeadSearch`
 - `salesApiPeopleSearch`
@@ -123,240 +129,180 @@ Current patterns include:
 - `salesProfile`
 - `/voyager/api/graphql`
 
-### Fetch Responses
+For `fetch`, it reads `res.clone().text()` so the page response is not consumed.
+For XHR, it reads:
 
-For `fetch`, the interceptor calls `res.clone().text()` so the original page
-response remains untouched. The cloned response body is parsed as JSON and
-forwarded to `content.js`.
+- `responseText` for text responses
+- `Blob.text()` for blob responses
+- `TextDecoder("utf-8")` for array buffers
 
-### XHR Responses
-
-Sales Navigator may use different `responseType` values. The interceptor handles:
-
-- Empty response type or `text`: read `xhr.responseText`.
-- `blob`: call `xhr.response.text()`.
-- `arraybuffer`: decode with `TextDecoder("utf-8")`.
-
-This matters because Sales Navigator commonly returns lead-search responses as
-`Blob` objects. Earlier versions of this extension skipped those responses, which
-produced logs like `skipping xhr response type blob` and resulted in no captured
-records.
+This is important because Sales Navigator often returns lead-search responses as
+`Blob` objects.
 
 ## Parsing Strategy
 
-Sales Navigator payloads do not have one stable shape. Lead data may appear under
-keys such as `elements`, `data.elements`, `included`, `results`, `items`,
-`records`, `lead`, `profile`, `salesProfile`, `miniProfile`, or nested entity
-containers.
+Sales Navigator payloads are not stable. Lead data may appear under keys like
+`elements`, `data.elements`, `included`, `results`, `items`, `records`, `lead`,
+`profile`, `salesProfile`, `miniProfile`, or nested entity containers.
 
-The parser in `content.js` is designed around tolerant discovery rather than a
-single hard-coded path.
+`content.js` handles this with tolerant parsing:
 
-### Candidate Discovery
-
-`findLeadCandidates(payload)` performs a bounded breadth-first scan:
-
-- It walks nested objects and arrays up to a maximum depth.
-- It caps visited nodes to avoid runaway traversal on huge payloads.
-- It tracks seen objects with `WeakSet` to avoid cycles and duplicates.
-- It gives special attention to useful array names like `elements`, `included`,
-  `profiles`, `leads`, `results`, `items`, `records`, and `entities`.
-
-Each possible object is passed through:
-
-- `unwrapLeadCandidate(...)`, which unwraps common containers such as `lead`,
-  `profile`, `salesProfile`, `member`, `miniProfile`, `entity.profile`, and
+- `findLeadCandidates(payload)` performs a bounded breadth-first scan.
+- `WeakSet` tracking prevents cycles and duplicate candidate objects.
+- `unwrapLeadCandidate(...)` unwraps common containers like `lead`, `profile`,
+  `salesProfile`, `member`, `miniProfile`, `entity.profile`, and
   `target.salesProfile`.
-- `isLeadLike(...)`, which checks for lead/profile signals such as name fields,
-  profile URLs, public identifiers, current title, or Sales profile URNs.
+- `isLeadLike(...)` checks for profile signals such as names, profile URLs,
+  public IDs, titles, or Sales profile URNs.
+- `mapElement(...)` converts candidate objects into the workbook schema.
 
-This lets the extension survive payload changes where the lead object moves from,
-for example, `data.elements[]` to `included[]` or `results[].entity.salesProfile`.
+The mapper tries multiple paths for each field. For sparse fields it uses
+fallbacks where reasonable:
 
-### Record Mapping
+- Organisation ID from company URNs/IDs.
+- Organisation Website when LinkedIn includes website fields.
+- Seniority and Job Function from LinkedIn fields first, then title-based
+  inference.
+- Profile links from flagship URL or public identifier.
 
-`mapElement(el)` converts one candidate object into the flat CSV record shape.
-It uses defensive field access and tries multiple known field paths for each
-column. For example:
+## Deduplication And Storage
 
-- Name fields may come from `firstName`, `fullProfile.firstName`,
-  `miniProfile.firstName`, or `profile.firstName`.
-- Role data may come from `currentPositions[0].title`, `currentTitle`,
-  `headline.text`, or `title.text`.
-- Company data may come from current position fields or top-level company fields.
-- Public profile links are built from `publicIdentifier` when available.
-- Sales Navigator lead links are built from Sales profile URN tracking data.
-
-The parser uses helper functions:
-
-- `firstString(...)`: returns the first non-empty string from a list of options.
-- `get(obj, "a.b.c")`: safely reads nested fields.
-- `parseSalesUrn(...)`: extracts Sales Navigator member tokens and lead-path
-  values from URNs like `urn:li:fs_salesProfile:(ACwA...,NAME_SEARCH,...)`.
-- `tenureFromStart(...)` and `tenureValue(...)`: convert start-date shapes or
-  month counts into human-readable tenure values.
-
-### Deduplication And Merge Rules
-
-Captured records are stored in a map under `chrome.storage.local["snle_leads"]`.
-The key is:
-
-1. Sales Navigator profile/member ID when available.
-2. LinkedIn public identifier when available.
-3. Full name as a fallback.
-
-When a later response contains a record already seen, the extension merges fields
-instead of replacing the old object wholesale. The `prune(...)` helper keeps
-previous non-empty values when a newer response is sparse. This is useful because
-Sales Navigator often loads summary search cards first and richer profile data
-later, or vice versa.
-
-## Storage Model
-
-All captured data lives in `chrome.storage.local` under:
+Captured records are stored in:
 
 ```js
-snle_leads
+chrome.storage.local["snle_leads"]
 ```
 
-The value is an object map:
+The storage value is an object keyed by the best available identity:
 
-```json
-{
-  "ACwA...": {
-    "id": "ACwA...",
-    "linkedinName": "Example Person",
-    "firstName": "Example",
-    "lastName": "Person"
-  }
-}
-```
+1. LinkedIn public identifier/profile URL
+2. Exact name plus organisation
+3. Sales Navigator/member ID fallback
 
-The popup reads this storage key directly. Clearing data sets the map back to an
-empty object.
+The exported `ID` also prefers the public LinkedIn identifier when available,
+which makes the file easier to compare with LIX exports that use vanity IDs.
 
-## CSV Export
+When the same lead appears again, newer non-empty fields are merged in without
+overwriting older good values with blanks. Name-only rows that have no useful
+role, company, location, description, or public profile data are skipped.
 
-CSV export is built in `popup.js` from the stored lead array. The file includes a
-UTF-8 byte-order mark so Excel opens non-ASCII characters correctly.
+## Excel Export
 
-The popup sends the CSV string to `background.js`, and the background worker calls
-`chrome.downloads.download(...)`. Downloads are handled in the background worker
-so they can continue even if the popup closes.
+The workbook is generated locally in `popup.js` using plain JavaScript. No paid
+service or package install is required.
 
-## CSV Columns
+Formatting includes:
 
-The export uses this fixed column order:
+- Frozen header row
+- Auto-filter
+- Plain bold headers with borders
+- Bordered body cells
+- Wrapped text
+- Field-aware column widths
 
-`ID, LinkedIn Name, First Name, Last Name, Email Discovery, Email Deliverability,
-Email Type, Email Catch-all, Email Alternate, Description, Organisation Role,
-Organisation Name, Organisation URL, Organisation Industry, Organisation Size,
-Location, Industry, Current Role, Seniority, Job Function, Past Role(s), Education,
-Tenure at Company, Tenure in Role, Name Resolution, Profile Link,
-Sales Navigator Link, About, Shared Connections, Shared Connections Count`
+The popup sends the workbook as base64 to `background.js`, which downloads it
+with the Excel MIME type.
 
-### Email Columns
+## Workbook Columns
 
-The email columns are intentionally blank:
+The workbook exports:
 
-- `Email Discovery`
-- `Email Deliverability`
-- `Email Type`
-- `Email Catch-all`
-- `Email Alternate`
+`ID, LinkedIn Name, First Name, Last Name, Email Discovered, Email Deliverability,
+Email Type, Email Catch-all Score, Email Alternatives, Description,
+Organisation ID, Organisation, Organisation Sales Nav Link, Organisation Website,
+Organisation Size, Location, Industry, Current Role(s),
+Seniority, Job Function, Past Role(s), Education, Tenure at Company,
+Tenure in Role, Name Resolved?, Profile Link, Sales Navigator Profile Link, About,
+Shared Connections, Shared Connection Names`
 
-LinkedIn Sales Navigator search responses do not expose email addresses. These
-columns are included to preserve a downstream enrichment-friendly CSV shape.
+## Field Completeness
 
-## Logging And Debugging
+Sales Navigator search results usually include card-level data:
 
-Logs are scoped by execution context:
+- Name
+- Current role
+- Company
+- Location
+- Sales Navigator profile link
+- Sometimes tenure
 
-- `[SNLE:inject]`: appears in the Sales Navigator page console. Shows interceptor
-  installation, observed network calls, response-body handling, JSON forwarding,
-  and parse skips.
-- `[SNLE:content]`: appears in the Sales Navigator page console. Shows content
-  script initialization, injected-script readiness, candidate extraction,
-  normalized record counts, storage writes, and parser errors.
-- `[SNLE:popup]`: appears in the popup DevTools console. Shows popup refresh,
-  storage reads, background pings, CSV creation, downloads, and clear actions.
-- `[SNLE:background]`: appears in the extension service worker console. Shows
-  worker load, install/update events, pings, download requests, and download
-  results.
+Fields that may be blank unless richer profile/detail payloads are loaded:
 
-Chrome has separate consoles for the page, popup, and service worker. If a log is
-not visible, confirm that you are inspecting the correct context.
+- Past Role(s)
+- Education
+- Profile Link
+- Organisation Website
+- Shared Connection Names
 
-Useful expected capture sequence:
+Email fields are populated only when the observed payload actually contains an
+email or email metadata. The parser checks common email fields and bounded nested
+values on each lead object. Sales Navigator search payloads often do not provide
+email addresses, so these columns may still be blank without a separate
+authorized enrichment source.
+
+## Logging
+
+Logs are scoped by context:
+
+- `[SNLE:inject]`: page-world network interception and response forwarding.
+- `[SNLE:content]`: parsing, storage, pagination, and record persistence.
+- `[SNLE:popup]`: popup state, progress, Excel creation, and download messages.
+- `[SNLE:background]`: service worker startup, pings, and download handling.
+
+Common useful sequence:
 
 ```text
-[SNLE:content] info content script initialized ...
 [SNLE:inject] info interceptor installed ...
-[SNLE:inject] debug observing xhr ...
 [SNLE:inject] debug forwarding sales api response ...
 [SNLE:content] debug extracting lead candidates ...
 [SNLE:content] info records persisted ...
 ```
 
-If you see `skipping unsupported xhr response type`, the response body type is not
-currently handled. If you see `forwarding sales api response` but no records are
-persisted, the payload shape likely needs another parser path.
+If records are not increasing, inspect the Sales Navigator page console first.
 
 ## Common Issues
 
-### Popup Shows Zero Leads
+### Popup Shows Old UI
 
-- Reload the Sales Navigator tab after loading or updating the extension.
-- Scroll or paginate so Sales Navigator actually loads result batches.
-- Check the page console for `[SNLE:inject] forwarding sales api response`.
-- Check the page console for `[SNLE:content] records persisted`.
+Reload the unpacked extension in `chrome://extensions`. Confirm the manifest
+version is current, then reopen the popup.
 
-### No Service Worker Logs
+### Popup Shows Old Leads
 
-MV3 service workers sleep when idle. Open the popup; it sends a background ping
-that should wake the worker and produce `[SNLE:background]` logs. Also make sure
-you are inspecting the service worker for the correct unpacked extension instance.
+Click **Clear captured data** or start a new **Collect pages** run. A normal
+browser refresh no longer clears storage by itself because page-to-page
+collection may involve reloads and progress needs to survive them.
 
-### Old Popup Error Still Appears
+### Collection Stops Early
 
-If Chrome shows popup source that does not match the files in this repository,
-reload the unpacked extension from `chrome://extensions`. The current popup reads
-storage directly and does not use `chrome.tabs.sendMessage` for lead retrieval.
+Possible reasons:
 
-### `GET chrome-extension://invalid/`
+- Sales Navigator has no enabled Next button.
+- The current search has fewer pages than requested.
+- The page did not load new results after clicking Next.
+- The active tab was closed or navigated away.
 
-Those messages can appear from unrelated page or extension asset handling. They
-are not the main capture signal. The important signals are whether Sales API
-responses are forwarded and whether content parsing persists records.
+Use **Continue next pages** if the current page is already captured and you want
+to resume from the next page.
 
-## Design Tradeoffs
+### Total Leads Lower Than Pages × 25
 
-- The extension favors API payload observation over DOM scraping because Sales
-  Navigator markup and CSS are unstable.
-- Endpoint matching is broad enough to catch Sales Navigator changes, but still
-  scoped to Sales/Voyager-like names.
-- The parser is tolerant and recursive rather than strict, because response
-  nesting varies between search pages, saved lists, profile views, and experiments.
-- The extension stores only normalized records, not full raw payloads, to reduce
-  local storage size and avoid unnecessary sensitive data retention.
-- Full payloads are not dumped to logs; logs include counts, keys, sources, and
-  IDs for debugging.
+This can happen when:
 
-## Limitations
+- The current page was already captured before the run.
+- Leads are deduped across pages.
+- Sales Navigator returns fewer than 25 results on a page.
+- Some payloads do not contain parseable lead records.
 
-- Captures only data that Sales Navigator loads in the browser.
-- Field availability depends on the response shape and the user's Sales Navigator
-  access.
-- Email addresses are not captured because Sales Navigator search APIs do not
-  provide them.
-- LinkedIn can change internal API names or payload shapes at any time, requiring
-  updates to endpoint matching or parser paths.
-- Use only for accounts and workflows where you have authorization and where your
-  usage complies with LinkedIn's terms.
+The progress panel shows total deduped leads captured, not raw rows loaded.
+
+## Responsible Use
+
+This extension is for authorized workflows. It uses explicit user controls,
+bounded page counts, and delays for reliability and to avoid aggressive loading.
+It is not intended to bypass LinkedIn safeguards or terms.
 
 ## Repository
-
-GitHub remote:
 
 ```text
 https://github.com/Npalusa1305/Linkdin_profile_extractor

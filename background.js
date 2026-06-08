@@ -1,5 +1,5 @@
 // background.js — service worker.
-// CSV download is handled here so it survives the popup closing.
+// Excel download is handled here so it survives the popup closing.
 const LOG_PREFIX = "[SNLE:background]";
 
 function log(level, message, details) {
@@ -56,17 +56,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg && msg.target === "background" && msg.action === "download") {
+    const xlsxSize = typeof msg.xlsxBase64 === "string" ? msg.xlsxBase64.length : 0;
     const csvSize = typeof msg.csv === "string" ? msg.csv.length : 0;
+    const filename = msg.filename || (msg.xlsxBase64 ? "sales-navigator-leads.xlsx" : "sales-navigator-leads.csv");
     log("info", "download requested", {
-      filename: msg.filename || "sales-navigator-leads.csv",
+      filename: filename,
+      xlsxBase64Characters: xlsxSize,
       csvCharacters: csvSize
     });
 
-    const dataUrl = "data:text/csv;charset=utf-8," + encodeURIComponent(msg.csv);
+    const dataUrl = msg.xlsxBase64
+      ? "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + msg.xlsxBase64
+      : "data:text/csv;charset=utf-8," + encodeURIComponent(msg.csv || "");
     chrome.downloads.download(
       {
         url: dataUrl,
-        filename: msg.filename || "sales-navigator-leads.csv",
+        filename: filename,
         saveAs: true
       },
       (downloadId) => {

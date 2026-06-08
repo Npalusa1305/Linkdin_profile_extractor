@@ -35,9 +35,64 @@
     #download { background: #0a66c2; color: #fff; }
     #download:hover { background: #004182; }
     #download:disabled { background: #c7d6e6; cursor: not-allowed; }
-    #refresh { background: #eef3f8; color: #0a66c2; }
+    #collect { background: #0a66c2; color: #fff; }
+    #continueCollect { background: #eef3f8; color: #0a66c2; }
     #clear { background: transparent; color: #b24020; font-weight: 600; }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #5e5e5e;
+      margin-bottom: 4px;
+    }
+    input {
+      box-sizing: border-box;
+      width: 100%;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      font-size: 13px;
+      padding: 7px 8px;
+    }
     .status { font-size: 11px; color: #5e5e5e; min-height: 14px; margin-top: 4px; }
+    .loading {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: #424242;
+      margin: 0 0 8px;
+    }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #d0d7de;
+      border-top-color: #0a66c2;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .progress {
+      display: none;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #f6f8fa;
+      font-size: 11px;
+      color: #424242;
+      line-height: 1.5;
+    }
+    .progress strong {
+      color: #191919;
+    }
     .warn {
       font-size: 11px; color: #915907; background: #fef9e7;
       border-radius: 6px; padding: 8px; margin-bottom: 12px; line-height: 1.4;
@@ -54,8 +109,32 @@
   <div class="count" id="count">0</div>
   <div class="count-label">leads captured</div>
 
-  <button id="download" disabled>Download CSV</button>
-  <button id="refresh">Refresh count</button>
+  <button id="download" disabled>Download Excel</button>
+  <div class="controls">
+    <div>
+      <label for="pageLimit">Pages to collect</label>
+      <input id="pageLimit" type="number" min="1" max="1000" step="1" value="4" />
+    </div>
+    <div>
+      <label for="pageDelay">Delay (sec)</label>
+      <input id="pageDelay" type="number" min="5" max="120" step="1" value="8" />
+    </div>
+  </div>
+  <button id="collect">Collect pages</button>
+  <button id="continueCollect">Continue next pages</button>
+  <div id="loading" class="loading">
+    <span class="spinner"></span>
+    <span id="loadingText">Working...</span>
+  </div>
+  <div id="progress" class="progress">
+    <div><strong id="progressState">Idle</strong></div>
+    <div>Current page: <span id="currentPage">-</span></div>
+    <div>Pages checked: <span id="pagesChecked">0</span>/<span id="pagesCheckedLimit">0</span></div>
+    <div>Pages with captured leads: <span id="pagesAdvanced">0</span>/<span id="pagesLimit">0</span></div>
+    <div>Total leads captured: <span id="totalProfiles">0</span></div>
+    <div>Estimated profiles: <span id="estimatedProfiles">0</span></div>
+    <div>Next action: <span id="nextAction">-</span></div>
+  </div>
   <button id="clear">Clear captured data</button>
   <div class="status" id="status"></div>
 

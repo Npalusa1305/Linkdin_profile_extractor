@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Sales Navigator Lead Extractor",
-  "version": "1.0.2",
-  "description": "Extracts lead data from LinkedIn Sales Navigator search results and exports to CSV.",
+  "version": "1.0.27",
+  "description": "Extracts lead data from LinkedIn Sales Navigator search results and exports a formatted Excel workbook.",
   "permissions": ["storage", "downloads", "activeTab", "scripting"],
   "host_permissions": [
     "https://www.linkedin.com/*"
