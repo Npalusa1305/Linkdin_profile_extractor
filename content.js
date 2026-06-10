@@ -9,6 +9,7 @@
   const STORAGE_KEY = "snle_leads";
   const PENDING_COLLECTION_KEY = "snle_pending_collection";
   const COLLECTION_STATE_KEY = "snle_collection_state";
+  const AUDIT_STORAGE_KEY = "snle_field_audit";
   const LOG_PREFIX = "[SNLE:content]";
 
   function log(level, message, details) {
@@ -38,7 +39,7 @@
   }
 
   function clearCapturedDataForPageLoad(callback) {
-    chrome.storage.local.set({ [STORAGE_KEY]: {}, [COLLECTION_STATE_KEY]: {} }, () => {
+    chrome.storage.local.set({ [STORAGE_KEY]: {}, [AUDIT_STORAGE_KEY]: [], [COLLECTION_STATE_KEY]: {} }, () => {
       const writeError = chrome.runtime.lastError && chrome.runtime.lastError.message;
       if (writeError) {
         log("error", "failed to clear storage on page load", { error: writeError });
@@ -113,6 +114,133 @@
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
+  }
+
+  function valueToText(value) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (!value || typeof value !== "object") return "";
+    return firstString(
+      value.text,
+      value.name,
+      value.displayName,
+      value.localizedName,
+      value.label,
+      value.value,
+      get(value, "localized.en_US"),
+      get(value, "localized.en"),
+      get(value, "preferredLocale.text")
+    );
+  }
+
+  function rawType(value) {
+    if (Array.isArray(value)) return "array";
+    if (value === null) return "null";
+    return typeof value;
+  }
+
+  function firstText() {
+    for (let i = 0; i < arguments.length; i++) {
+      const text = valueToText(arguments[i]);
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function pickText(candidates) {
+    for (const candidate of candidates) {
+      const text = valueToText(candidate && candidate.value);
+      if (text) {
+        return {
+          value: text,
+          source: candidate.source || "unknown",
+          rawType: rawType(candidate.value)
+        };
+      }
+    }
+    return { value: "", source: "", rawType: "empty" };
+  }
+
+  function findDeepText(root, keyPattern, valuePattern) {
+    return findDeepTextMatch(root, keyPattern, valuePattern).value;
+  }
+
+  function findDeepTextMatch(root, keyPattern, valuePattern) {
+    if (!root || typeof root !== "object") return { value: "", source: "", rawType: "empty" };
+    const seen = new WeakSet();
+    const queue = [{ value: root, path: "$", depth: 0 }];
+    const maxNodes = 1800;
+    const maxDepth = 8;
+    let visited = 0;
+
+    while (queue.length && visited < maxNodes) {
+      const item = queue.shift();
+      const value = item.value;
+      if (!value || typeof value !== "object" || seen.has(value)) continue;
+      seen.add(value);
+      visited++;
+
+      const entries = Array.isArray(value)
+        ? value.map((child, index) => [String(index), child])
+        : Object.keys(value).map((key) => [key, value[key]]);
+
+      for (const pair of entries) {
+        const key = pair[0];
+        const child = pair[1];
+        if (keyPattern.test(key)) {
+          const text = Array.isArray(child)
+            ? child.map((item) => valueToText(item)).filter(Boolean).join(" | ")
+            : valueToText(child);
+          if (text && (!valuePattern || valuePattern.test(text))) {
+            return { value: text, source: item.path + "." + key, rawType: rawType(child) };
+          }
+        }
+        if (item.depth < maxDepth && child && typeof child === "object") {
+          queue.push({ value: child, path: item.path + "." + key, depth: item.depth + 1 });
+        }
+      }
+    }
+
+    return { value: "", source: "", rawType: "empty" };
+  }
+
+  function normalizeRange(value) {
+    const text = valueToText(value);
+    if (text) {
+      const cleaned = text
+        .replace(/^SIZE_/i, "")
+        .replace(/_/g, "-")
+        .replace(/\bTO\b/i, "to")
+        .replace(/\s+/g, " ")
+        .trim();
+      const range = cleaned.match(/(\d+)\s*(?:-|to)\s*(\d+)/i);
+      if (range) return range[1] + "-" + range[2];
+      return cleaned;
+    }
+    if (value && typeof value === "object") {
+      const start = value.start || value.min || value.lowerBound || value.from;
+      const end = value.end || value.max || value.upperBound || value.to;
+      if (start != null && end != null) return String(start) + "-" + String(end);
+    }
+    return "";
+  }
+
+  function cleanNamePart(value) {
+    return String(value || "")
+      .replace(/,.*$/, "")
+      .replace(/\b(MD|MBA|PhD|FACP|FAAP|CPA|Esq\.?|Jr\.?|Sr\.?)\b\.?/gi, "")
+      .replace(/\b(DBA|EMBA|PE|P\.E\.|CQA|LMT)\b\.?/gi, "")
+      .replace(/,+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function splitName(fullName) {
+    const cleaned = cleanNamePart(fullName);
+    if (!cleaned) return { firstName: "", lastName: "" };
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+    return { firstName: parts[0], lastName: parts[parts.length - 1] };
   }
 
   function publicIdFromProfileUrl(url) {
@@ -213,16 +341,14 @@
     const now = new Date();
     let months = (now.getFullYear() - year) * 12 + (now.getMonth() + 1 - month);
     if (months < 0) months = 0;
-    const years = Math.floor(months / 12);
-    if (years >= 1) return years + (years === 1 ? " year" : " years");
-    return months + (months === 1 ? " month" : " months");
+    months += 1;
+    return formatTenureMonths(months);
   }
 
   function tenureValue(pos, startKeys, monthKey) {
     // Prefer explicit month counts if present, else compute from a start date.
     if (monthKey != null && typeof pos[monthKey] === "number") {
-      const yrs = Math.floor(pos[monthKey] / 12);
-      return yrs >= 1 ? yrs + (yrs === 1 ? " year" : " years") : pos[monthKey] + " months";
+      return formatTenureMonths(pos[monthKey]);
     }
     for (const k of startKeys) {
       if (pos[k]) {
@@ -231,6 +357,43 @@
       }
     }
     return "";
+  }
+
+  function tenureValueWithSource(pos, startKeys, monthKey, sourcePrefix) {
+    if (monthKey != null && typeof pos[monthKey] === "number") {
+      return {
+        value: formatTenureMonths(pos[monthKey]),
+        source: sourcePrefix + "." + monthKey,
+        rawType: "number",
+        rawValue: pos[monthKey]
+      };
+    }
+    for (const k of startKeys) {
+      if (pos[k]) {
+        const t = tenureFromStart(pos[k]);
+        if (t) {
+          return {
+            value: t,
+            source: sourcePrefix + "." + k,
+            rawType: rawType(pos[k]),
+            rawValue: pos[k]
+          };
+        }
+      }
+    }
+    return { value: "", source: "", rawType: "empty" };
+  }
+
+  function formatTenureMonths(months) {
+    const totalMonths = Math.max(0, Number(months) || 0);
+    const years = Math.floor(totalMonths / 12);
+    const remainingMonths = totalMonths % 12;
+    const parts = [];
+    if (years) parts.push(years + (years === 1 ? " year" : " years"));
+    if (remainingMonths || !parts.length) {
+      parts.push(remainingMonths + (remainingMonths === 1 ? " month" : " months"));
+    }
+    return parts.join(" ");
   }
 
   function positionsArray(el) {
@@ -271,31 +434,30 @@
   function inferSeniority(title) {
     const t = String(title || "").toLowerCase();
     if (!t) return "";
-    if (/\b(founder|co[-\s]?founder|owner|partner)\b/.test(t)) return "Founder/Owner";
-    if (/\b(chief|ceo|cto|cfo|coo|cio|cmo|cro|cpo|president)\b/.test(t)) return "C-Level";
-    if (/\b(vp|vice president|svp|evp)\b/.test(t)) return "VP";
-    if (/\b(head|director|managing director)\b/.test(t)) return "Director";
-    if (/\b(manager|lead|principal)\b/.test(t)) return "Manager";
-    if (/\b(senior|sr\.?|staff)\b/.test(t)) return "Senior";
-    if (/\b(intern|trainee|student)\b/.test(t)) return "Entry";
+    if (/\b(founder|co[-\s]?founder|owner|partner|chief|ceo|cto|cfo|coo|cio|cmo|cro|cpo|president)\b/.test(t)) return "partner_cxo";
+    if (/\b(vp|vice president|svp|evp)\b/.test(t)) return "vp";
+    if (/\b(head|director|managing director)\b/.test(t)) return "director";
+    if (/\b(manager|lead|principal)\b/.test(t)) return "manager";
+    if (/\b(senior|sr\.?|staff)\b/.test(t)) return "senior";
+    if (/\b(intern|trainee|student)\b/.test(t)) return "entry";
     return "";
   }
 
   function inferJobFunction(title) {
     const t = String(title || "").toLowerCase();
     if (!t) return "";
-    if (/\b(engineer|engineering|developer|software|frontend|backend|full stack|data scientist|devops|sre|architect)\b/.test(t)) return "Engineering";
-    if (/\b(sales|account executive|business development|revenue|growth|partnership)\b/.test(t)) return "Sales";
-    if (/\b(marketing|brand|demand generation|seo|content|communications)\b/.test(t)) return "Marketing";
-    if (/\b(product|program manager|project manager|scrum)\b/.test(t)) return "Product/Program";
-    if (/\b(finance|financial|accounting|controller|treasury|fp&a)\b/.test(t)) return "Finance";
-    if (/\b(hr|people|talent|recruit|human resources)\b/.test(t)) return "Human Resources";
-    if (/\b(operations|supply chain|logistics|procurement)\b/.test(t)) return "Operations";
-    if (/\b(legal|counsel|attorney|compliance)\b/.test(t)) return "Legal";
-    if (/\b(customer success|support|client services|implementation)\b/.test(t)) return "Customer Success";
-    if (/\b(design|designer|ux|ui|creative)\b/.test(t)) return "Design";
-    if (/\b(research|scientist|faculty|professor|teacher|instructor)\b/.test(t)) return "Education/Research";
-    if (/\b(consultant|strategy|business analyst|analyst)\b/.test(t)) return "Consulting/Strategy";
+    if (/\b(engineer|engineering|developer|software|frontend|backend|full stack|data scientist|devops|sre|architect|technology|technical)\b/.test(t)) return "engineering";
+    if (/\b(sales|account executive|business development|revenue|growth|partnership)\b/.test(t)) return "sales";
+    if (/\b(marketing|brand|demand generation|seo|content|communications)\b/.test(t)) return "marketing";
+    if (/\b(product|program manager|project manager|scrum)\b/.test(t)) return "product";
+    if (/\b(finance|financial|accounting|controller|treasury|fp&a)\b/.test(t)) return "finance";
+    if (/\b(hr|people|talent|recruit|human resources)\b/.test(t)) return "human_resources";
+    if (/\b(founder|co[-\s]?founder|owner|chief|ceo|coo|president|operations|supply chain|logistics|procurement)\b/.test(t)) return "operations";
+    if (/\b(legal|counsel|attorney|compliance)\b/.test(t)) return "legal";
+    if (/\b(customer success|support|client services|implementation)\b/.test(t)) return "customer_success";
+    if (/\b(design|designer|ux|ui|creative)\b/.test(t)) return "design";
+    if (/\b(research|scientist|faculty|professor|teacher|instructor)\b/.test(t)) return "education";
+    if (/\b(consultant|strategy|business analyst|analyst)\b/.test(t)) return "consulting";
     return "";
   }
 
@@ -432,64 +594,87 @@
     const { id, leadPath } = parseSalesUrn(entityUrn || objectUrn);
     if (!id && !el.fullName && !el.firstName) return null;
 
-    const firstName = firstString(
-      el.firstName,
-      get(el, "fullProfile.firstName"),
-      get(el, "miniProfile.firstName"),
-      get(el, "profile.firstName")
-    );
-    const lastName = firstString(
-      el.lastName,
-      get(el, "fullProfile.lastName"),
-      get(el, "miniProfile.lastName"),
-      get(el, "profile.lastName")
-    );
-    const fullName = firstString(
-      el.fullName,
-      get(el, "name.text"),
-      get(el, "fullProfile.fullName"),
-      get(el, "miniProfile.fullName"),
-      get(el, "profile.fullName"),
-      (firstName + " " + lastName).trim()
-    );
+    const rawFirstNamePick = pickText([
+      { source: "firstName", value: el.firstName },
+      { source: "fullProfile.firstName", value: get(el, "fullProfile.firstName") },
+      { source: "miniProfile.firstName", value: get(el, "miniProfile.firstName") },
+      { source: "profile.firstName", value: get(el, "profile.firstName") }
+    ]);
+    const rawLastNamePick = pickText([
+      { source: "lastName", value: el.lastName },
+      { source: "fullProfile.lastName", value: get(el, "fullProfile.lastName") },
+      { source: "miniProfile.lastName", value: get(el, "miniProfile.lastName") },
+      { source: "profile.lastName", value: get(el, "profile.lastName") }
+    ]);
+    const rawFirstName = rawFirstNamePick.value;
+    const rawLastName = rawLastNamePick.value;
+    const fullNamePick = pickText([
+      { source: "fullName", value: el.fullName },
+      { source: "name.text", value: get(el, "name.text") },
+      { source: "fullProfile.fullName", value: get(el, "fullProfile.fullName") },
+      { source: "miniProfile.fullName", value: get(el, "miniProfile.fullName") },
+      { source: "profile.fullName", value: get(el, "profile.fullName") },
+      { source: "firstName + lastName", value: (rawFirstName + " " + rawLastName).trim() }
+    ]);
+    const fullName = fullNamePick.value;
+    const split = splitName(fullName);
+    const firstName = firstString(split.firstName, cleanNamePart(rawFirstName));
+    const lastName = firstString(split.lastName, cleanNamePart(rawLastName));
 
     const cur = positionsArray(el)[0] || {};
-    const role = firstString(cur.title, el.currentTitle, get(el, "headline.text"), get(el, "title.text"));
-    const company = firstString(
-      cur.companyName,
-      get(cur, "company.name"),
-      el.companyName,
-      get(el, "company.name"),
-      get(el, "currentCompany.name")
-    );
-    const companyUrn = firstString(
-      cur.companyUrn,
-      get(cur, "company.entityUrn"),
-      get(cur, "company.objectUrn"),
-      el.companyUrn,
-      get(el, "company.entityUrn"),
-      get(el, "company.objectUrn"),
-      get(el, "currentCompany.entityUrn"),
-      get(el, "currentCompany.objectUrn")
-    );
-    const companyId = firstString(
-      parseSalesUrn(companyUrn).id,
-      get(cur, "company.id"),
-      get(el, "company.id"),
-      get(el, "currentCompany.id")
-    );
+    const rolePick = pickText([
+      { source: "currentPositions[0].title", value: cur.title },
+      { source: "currentTitle", value: el.currentTitle },
+      { source: "headline.text", value: get(el, "headline.text") },
+      { source: "title.text", value: get(el, "title.text") }
+    ]);
+    const role = rolePick.value;
+    const companyDeep = findDeepTextMatch(el, /^(companyName|organizationName|organisationName)$/i);
+    const companyPick = pickText([
+      { source: "currentPositions[0].companyName", value: cur.companyName },
+      { source: "currentPositions[0].company.name", value: get(cur, "company.name") },
+      { source: "companyName", value: el.companyName },
+      { source: "company.name", value: get(el, "company.name") },
+      { source: "currentCompany.name", value: get(el, "currentCompany.name") },
+      companyDeep
+    ]);
+    const company = companyPick.value;
+    const companyUrnPick = pickText([
+      { source: "currentPositions[0].companyUrn", value: cur.companyUrn },
+      { source: "currentPositions[0].company.entityUrn", value: get(cur, "company.entityUrn") },
+      { source: "currentPositions[0].company.objectUrn", value: get(cur, "company.objectUrn") },
+      { source: "companyUrn", value: el.companyUrn },
+      { source: "company.entityUrn", value: get(el, "company.entityUrn") },
+      { source: "company.objectUrn", value: get(el, "company.objectUrn") },
+      { source: "currentCompany.entityUrn", value: get(el, "currentCompany.entityUrn") },
+      { source: "currentCompany.objectUrn", value: get(el, "currentCompany.objectUrn") }
+    ]);
+    const companyUrn = companyUrnPick.value;
+    const parsedCompanyId = parseSalesUrn(companyUrn).id;
+    const companyIdDeep = findDeepTextMatch(el, /^(companyId|organizationId|organisationId|companyNumericId)$/i);
+    const companyIdPick = pickText([
+      { source: companyUrnPick.source ? "parseSalesUrn(" + companyUrnPick.source + ").id" : "", value: parsedCompanyId },
+      { source: "currentPositions[0].company.id", value: get(cur, "company.id") },
+      { source: "company.id", value: get(el, "company.id") },
+      { source: "currentCompany.id", value: get(el, "currentCompany.id") },
+      companyIdDeep
+    ]);
+    const companyId = companyIdPick.value;
     const companyUrl = companyUrn
       ? "https://www.linkedin.com/sales/company/" + (companyId || companyUrn.split(":").pop())
       : "";
-    const companyWebsite = firstString(
-      get(cur, "company.website"),
-      get(cur, "company.websiteUrl"),
-      get(cur, "company.companyWebsite"),
-      get(el, "company.website"),
-      get(el, "company.websiteUrl"),
-      get(el, "currentCompany.website"),
-      get(el, "currentCompany.websiteUrl")
-    );
+    const companyWebsiteDeep = findDeepTextMatch(el, /website|webSite|homepage|companyWebsite/i, /^https?:\/\/|^[\w.-]+\.[a-z]{2,}/i);
+    const companyWebsitePick = pickText([
+      { source: "currentPositions[0].company.website", value: get(cur, "company.website") },
+      { source: "currentPositions[0].company.websiteUrl", value: get(cur, "company.websiteUrl") },
+      { source: "currentPositions[0].company.companyWebsite", value: get(cur, "company.companyWebsite") },
+      { source: "company.website", value: get(el, "company.website") },
+      { source: "company.websiteUrl", value: get(el, "company.websiteUrl") },
+      { source: "currentCompany.website", value: get(el, "currentCompany.website") },
+      { source: "currentCompany.websiteUrl", value: get(el, "currentCompany.websiteUrl") },
+      companyWebsiteDeep
+    ]);
+    const companyWebsite = companyWebsitePick.value;
 
     const past = pastPositionsArray(el)
       .map((p) => {
@@ -511,21 +696,42 @@
       .filter(Boolean)
       .join(" | ");
 
-    const location = firstString(
-      el.geoRegion,
-      el.location,
-      get(el, "fullProfile.geoRegion"),
-      get(el, "location.name")
-    );
+    const locationDeep = findDeepTextMatch(el, /^(geoRegion|locationName)$/i);
+    const locationPick = pickText([
+      { source: "geoRegion", value: el.geoRegion },
+      { source: "location", value: el.location },
+      { source: "fullProfile.geoRegion", value: get(el, "fullProfile.geoRegion") },
+      { source: "location.name", value: get(el, "location.name") },
+      locationDeep
+    ]);
+    const location = locationPick.value;
 
-    const industry = firstString(
-      el.industry,
-      get(el, "industryV2.name"),
-      get(el, "company.industry"),
-      get(cur, "company.industry")
-    );
+    const industryDeep = findDeepTextMatch(el, /^(industry|industryName|companyIndustry|industries)$/i);
+    const industryPick = pickText([
+      { source: "industry", value: el.industry },
+      { source: "industryName", value: el.industryName },
+      { source: "industryV2.name", value: get(el, "industryV2.name") },
+      { source: "industryV2.localizedName", value: get(el, "industryV2.localizedName") },
+      { source: "company.industry", value: get(el, "company.industry") },
+      { source: "company.industryName", value: get(el, "company.industryName") },
+      { source: "currentCompany.industry", value: get(el, "currentCompany.industry") },
+      { source: "currentCompany.industryName", value: get(el, "currentCompany.industryName") },
+      { source: "currentPositions[0].company.industry", value: get(cur, "company.industry") },
+      { source: "currentPositions[0].company.industryName", value: get(cur, "company.industryName") },
+      { source: "currentPositions[0].company.industries[0].name", value: get(cur, "company.industries.0.name") },
+      { source: "company.industries[0].name", value: get(el, "company.industries.0.name") },
+      industryDeep
+    ]);
+    const industry = industryPick.value;
 
-    const about = firstString(el.summary, get(el, "fullProfile.summary"), el.about);
+    const aboutDeep = findDeepTextMatch(el, /^(summary|about)$/i);
+    const aboutPick = pickText([
+      { source: "summary", value: el.summary },
+      { source: "fullProfile.summary", value: get(el, "fullProfile.summary") },
+      { source: "about", value: el.about },
+      aboutDeep
+    ]);
+    const about = aboutPick.value;
 
     const sharedCount =
       el.numOfSharedConnections != null
@@ -535,32 +741,60 @@
       .map((s) => firstString(s.fullName, ((s.firstName || "") + " " + (s.lastName || "")).trim()))
       .filter(Boolean)
       .join(" | ");
-    const seniority = firstString(el.seniority, cur.seniority, get(el, "seniority.name"), inferSeniority(role));
-    const jobFunction = firstString(
-      el.function,
-      cur.function,
-      el.jobFunction,
-      get(el, "function.name"),
-      get(cur, "function.name"),
-      inferJobFunction(role)
-    );
+    const seniorityDeep = findDeepTextMatch(el, /^(seniority|seniorityLevel|seniorityName)$/i);
+    const inferredSeniority = inferSeniority(role);
+    const seniorityPick = pickText([
+      { source: "seniority", value: el.seniority },
+      { source: "currentPositions[0].seniority", value: cur.seniority },
+      { source: "seniority.name", value: get(el, "seniority.name") },
+      { source: "seniority.value", value: get(el, "seniority.value") },
+      { source: "currentPositions[0].seniority.name", value: get(cur, "seniority.name") },
+      { source: "currentPositions[0].seniority.value", value: get(cur, "seniority.value") },
+      seniorityDeep,
+      { source: "inferSeniority(currentRole)", value: inferredSeniority }
+    ]);
+    const seniority = seniorityPick.value;
+    const jobFunctionDeep = findDeepTextMatch(el, /^(jobFunction|function|functionName|department)$/i);
+    const inferredJobFunction = inferJobFunction(role);
+    const jobFunctionPick = pickText([
+      { source: "function", value: el.function },
+      { source: "currentPositions[0].function", value: cur.function },
+      { source: "jobFunction", value: el.jobFunction },
+      { source: "function.name", value: get(el, "function.name") },
+      { source: "function.value", value: get(el, "function.value") },
+      { source: "currentPositions[0].function.name", value: get(cur, "function.name") },
+      { source: "currentPositions[0].function.value", value: get(cur, "function.value") },
+      jobFunctionDeep,
+      { source: "inferJobFunction(currentRole)", value: inferredJobFunction }
+    ]);
+    const jobFunction = jobFunctionPick.value;
 
-    const publicId = firstString(
-      el.publicIdentifier,
-      get(el, "fullProfile.publicIdentifier"),
-      get(el, "miniProfile.publicIdentifier"),
-      get(el, "profile.publicIdentifier")
-    );
-    const profileLink = firstString(
-      el.flagshipProfileUrl,
-      get(el, "miniProfile.flagshipProfileUrl"),
-      get(el, "profile.flagshipProfileUrl"),
-      get(el, "fullProfile.flagshipProfileUrl"),
-      publicId ? "https://www.linkedin.com/in/" + publicId : ""
-    );
+    const publicIdDeep = findDeepTextMatch(el, /^(publicIdentifier|vanityName|vanityNameUrl)$/i);
+    const publicIdPick = pickText([
+      { source: "publicIdentifier", value: el.publicIdentifier },
+      { source: "fullProfile.publicIdentifier", value: get(el, "fullProfile.publicIdentifier") },
+      { source: "miniProfile.publicIdentifier", value: get(el, "miniProfile.publicIdentifier") },
+      { source: "profile.publicIdentifier", value: get(el, "profile.publicIdentifier") },
+      publicIdDeep
+    ]);
+    const publicId = publicIdPick.value;
+    const profileLinkDeep = findDeepTextMatch(el, /^(flagshipProfileUrl|publicProfileUrl|profileUrl|linkedInProfileUrl)$/i, /linkedin\.com\/in\//i);
+    const profileLinkPick = pickText([
+      { source: "flagshipProfileUrl", value: el.flagshipProfileUrl },
+      { source: "miniProfile.flagshipProfileUrl", value: get(el, "miniProfile.flagshipProfileUrl") },
+      { source: "profile.flagshipProfileUrl", value: get(el, "profile.flagshipProfileUrl") },
+      { source: "fullProfile.flagshipProfileUrl", value: get(el, "fullProfile.flagshipProfileUrl") },
+      profileLinkDeep,
+      { source: publicIdPick.source ? "build from " + publicIdPick.source : "build from publicIdentifier", value: publicId ? "https://www.linkedin.com/in/" + publicId : "" },
+      { source: "build from sales/member id", value: /^ACw/i.test(id) ? "https://www.linkedin.com/in/" + id : "" }
+    ]);
+    const profileLink = profileLinkPick.value;
     const resolvedPublicId = firstString(publicId, publicIdFromProfileUrl(profileLink));
     const recordId = resolvedPublicId || id || fullName;
-    const salesNavLink = leadPath ? "https://www.linkedin.com/sales/lead/" + leadPath : "";
+    const leadPathParts = leadPath ? leadPath.split(",").map((part) => part.trim()) : [];
+    const salesNavLink = leadPathParts.length >= 3 && leadPathParts[1] && leadPathParts[2]
+      ? "https://www.linkedin.com/sales/lead/" + leadPath
+      : "";
     const emails = findEmails(el);
     const emailDiscovery = firstString(
       emails[0],
@@ -572,8 +806,33 @@
       normalizeEmail(get(el, "profile.email")),
       normalizeEmail(get(el, "fullProfile.email"))
     );
+    const organisationSizeDeep = findDeepTextMatch(el, /^(employeeCountRange|staffCountRange|companySize)$/i);
+    const organisationSizePick = pickText([
+      { source: "currentPositions[0].company.employeeCountRange", value: normalizeRange(get(cur, "company.employeeCountRange")) },
+      { source: "currentPositions[0].company.staffCountRange", value: normalizeRange(get(cur, "company.staffCountRange")) },
+      { source: "company.employeeCountRange", value: normalizeRange(get(el, "company.employeeCountRange")) },
+      { source: "company.staffCountRange", value: normalizeRange(get(el, "company.staffCountRange")) },
+      { source: "currentCompany.employeeCountRange", value: normalizeRange(get(el, "currentCompany.employeeCountRange")) },
+      { source: "currentCompany.staffCountRange", value: normalizeRange(get(el, "currentCompany.staffCountRange")) },
+      { source: "currentPositions[0].company.employeeCount", value: get(cur, "company.employeeCount") },
+      { source: "company.employeeCount", value: get(el, "company.employeeCount") },
+      { source: "companySize", value: el.companySize },
+      { source: organisationSizeDeep.source, value: normalizeRange(organisationSizeDeep.value), rawType: organisationSizeDeep.rawType }
+    ]);
+    const tenureAtCompanyPick = tenureValueWithSource(
+      cur,
+      ["tenureAtCompanyStartedOn", "companyStartedOn", "startedOn"],
+      "tenureAtCompany",
+      "currentPositions[0]"
+    );
+    const tenureInRolePick = tenureValueWithSource(
+      cur,
+      ["tenureStartedOn", "startedOn", "tenureAtPositionStartedOn"],
+      "tenureAtPosition",
+      "currentPositions[0]"
+    );
 
-    return {
+    const record = {
       id: recordId,
       linkedinName: fullName,
       firstName: firstName,
@@ -597,13 +856,7 @@
       organisationSalesNavLink: companyUrl,
       organisationWebsite: companyWebsite,
       organisationIndustry: industry,
-      organisationSize: firstString(
-        get(cur, "company.employeeCountRange"),
-        get(cur, "company.employeeCount"),
-        get(el, "company.employeeCountRange"),
-        get(el, "company.employeeCount"),
-        el.companySize
-      ),
+      organisationSize: organisationSizePick.value,
       location: location,
       industry: industry,
       currentRole: role,
@@ -611,8 +864,8 @@
       jobFunction: jobFunction,
       pastRoles: past,
       education: education,
-      tenureAtCompany: tenureValue(cur, ["tenureAtCompanyStartedOn", "companyStartedOn", "startedOn"], "tenureAtCompany"),
-      tenureInRole: tenureValue(cur, ["tenureStartedOn", "startedOn", "tenureAtPositionStartedOn"], "tenureAtPosition"),
+      tenureAtCompany: tenureAtCompanyPick.value,
+      tenureInRole: tenureInRolePick.value,
       nameResolution: fullName,
       profileLink: profileLink,
       salesNavLink: salesNavLink,
@@ -620,6 +873,49 @@
       sharedConnections: sharedNames,
       sharedConnectionNames: sharedNames,
       sharedConnectionsCount: sharedCount
+    };
+    record.__fieldAudit = buildFieldAudit(record, {
+      id: { value: recordId, source: resolvedPublicId ? "publicIdentifier/profileLink public id" : (id ? "parseSalesUrn(entityUrn/objectUrn).id" : "fullName fallback"), rawType: "string" },
+      linkedinName: fullNamePick,
+      firstName: split.firstName ? { value: firstName, source: "splitName(linkedinName)", rawType: "derived" } : rawFirstNamePick,
+      lastName: split.lastName ? { value: lastName, source: "splitName(linkedinName)", rawType: "derived" } : rawLastNamePick,
+      description: rolePick,
+      organisationId: companyIdPick,
+      organisationName: companyPick,
+      organisationSalesNavLink: { value: companyUrl, source: companyUrnPick.source ? "build from " + companyUrnPick.source : "", rawType: "derived" },
+      organisationWebsite: companyWebsitePick,
+      organisationSize: organisationSizePick,
+      location: locationPick,
+      industry: industryPick,
+      currentRole: rolePick,
+      seniority: seniorityPick,
+      jobFunction: jobFunctionPick,
+      tenureAtCompany: tenureAtCompanyPick,
+      tenureInRole: tenureInRolePick,
+      profileLink: profileLinkPick,
+      salesNavLink: { value: salesNavLink, source: leadPath ? "build from parseSalesUrn(entityUrn/objectUrn).leadPath" : "", rawType: "derived" },
+      about: aboutPick
+    });
+    return record;
+  }
+
+  function buildFieldAudit(record, picks) {
+    const fields = {};
+    for (const key of Object.keys(picks)) {
+      const pick = picks[key] || {};
+      fields[key] = {
+        value: record[key] == null ? "" : record[key],
+        source: pick.source || "",
+        rawType: pick.rawType || "",
+        rawValue: pick.rawValue === undefined ? undefined : pick.rawValue,
+        inferred: /^infer|^build|splitName/.test(pick.source || "")
+      };
+    }
+    return {
+      capturedAt: new Date().toISOString(),
+      id: record.id,
+      linkedinName: record.linkedinName,
+      fields: fields
     };
   }
 
@@ -684,6 +980,7 @@
       let skippedByLimit = 0;
       let skippedSparse = 0;
       let skippedByPageLimit = 0;
+      const auditEntries = [];
       const maxStoredLeads = paginationState.running && paginationState.maxPages
         ? paginationState.maxPages * 25
         : 0;
@@ -710,30 +1007,43 @@
           r.__captureOrder = paginationState.captureSequence;
         }
         else updated++;
-        // merge — keep any previously-captured non-empty fields
-        map[storageKey] = Object.assign({}, map[storageKey] || {}, prune(r, map[storageKey]));
-      }
-      chrome.storage.local.set({ [STORAGE_KEY]: map }, () => {
-        const writeError = chrome.runtime.lastError && chrome.runtime.lastError.message;
-        if (writeError) {
-          log("error", "failed to write storage", { error: writeError });
-          return;
+        if (r.__fieldAudit) {
+          r.__fieldAudit.capturePage = r.__capturePage || currentPageNumber();
+          r.__fieldAudit.captureOrder = r.__captureOrder || "";
+          r.__fieldAudit.storageKey = storageKey;
+          auditEntries.push(r.__fieldAudit);
         }
-        log(added ? "info" : "debug", "records persisted", {
-          received: records.length,
-          added: added,
-          updated: updated,
-          skippedByLimit: skippedByLimit,
-          skippedSparse: skippedSparse,
-          skippedByPageLimit: skippedByPageLimit,
-          total: Object.keys(map).length
+        const cleanRecord = Object.assign({}, r);
+        delete cleanRecord.__fieldAudit;
+        // merge — keep any previously-captured non-empty fields
+        map[storageKey] = Object.assign({}, map[storageKey] || {}, prune(cleanRecord, map[storageKey]));
+      }
+      chrome.storage.local.get([AUDIT_STORAGE_KEY], (auditData) => {
+        const existingAudit = Array.isArray(auditData[AUDIT_STORAGE_KEY]) ? auditData[AUDIT_STORAGE_KEY] : [];
+        const nextAudit = existingAudit.concat(auditEntries).slice(-1000);
+        chrome.storage.local.set({ [STORAGE_KEY]: map, [AUDIT_STORAGE_KEY]: nextAudit }, () => {
+          const writeError = chrome.runtime.lastError && chrome.runtime.lastError.message;
+          if (writeError) {
+            log("error", "failed to write storage", { error: writeError });
+            return;
+          }
+          log(added ? "info" : "debug", "records persisted", {
+            received: records.length,
+            added: added,
+            updated: updated,
+            skippedByLimit: skippedByLimit,
+            skippedSparse: skippedSparse,
+            skippedByPageLimit: skippedByPageLimit,
+            auditEntries: auditEntries.length,
+            total: Object.keys(map).length
+          });
+          paginationState.lastLeadCount = Object.keys(map).length;
+          updateEstimatedProfiles();
+          paginationState.lastMessage = added
+            ? `Captured ${added} new lead(s)`
+            : paginationState.lastMessage;
+          persistPaginationState();
         });
-        paginationState.lastLeadCount = Object.keys(map).length;
-        updateEstimatedProfiles();
-        paginationState.lastMessage = added
-          ? `Captured ${added} new lead(s)`
-          : paginationState.lastMessage;
-        persistPaginationState();
       });
     });
   }
@@ -745,7 +1055,8 @@
       record.description ||
       record.organisationName ||
       record.location ||
-      record.profileLink
+      record.industry ||
+      record.about
     );
   }
 
@@ -1261,6 +1572,16 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const d = event.data;
+    if (d && d.source === "snle-devtools" && d.type === "dump-audit") {
+      chrome.storage.local.get([AUDIT_STORAGE_KEY], (data) => {
+        const audit = data[AUDIT_STORAGE_KEY] || [];
+        const json = JSON.stringify(audit, null, 2);
+        log("info", "field audit dump", { entries: audit.length });
+        console.log("[SNLE:field-audit]", json);
+        window.postMessage({ source: "snle-content", type: "audit-dump", audit: audit }, "https://www.linkedin.com");
+      });
+      return;
+    }
     if (!d || d.source !== "snle-inject") return;
     if (d.type === "ready") {
       log("info", "page interceptor ready");
@@ -1315,7 +1636,7 @@
       return true; // async
     }
     if (msg.action === "clear") {
-      chrome.storage.local.set({ [STORAGE_KEY]: {} }, () => {
+      chrome.storage.local.set({ [STORAGE_KEY]: {}, [AUDIT_STORAGE_KEY]: [] }, () => {
         const error = chrome.runtime.lastError && chrome.runtime.lastError.message;
         if (error) {
           log("error", "failed to clear leads", { error: error });
