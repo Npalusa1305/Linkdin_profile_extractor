@@ -435,8 +435,7 @@
     const t = String(title || "").toLowerCase();
     if (!t) return "";
     if (/\b(founder|co[-\s]?founder|owner|partner|chief|ceo|cto|cfo|coo|cio|cmo|cro|cpo|president)\b/.test(t)) return "partner_cxo";
-    if (/\b(vp|vice president|svp|evp)\b/.test(t)) return "vp";
-    if (/\b(head|director|managing director)\b/.test(t)) return "director";
+    if (/\b(vp|vice president|svp|evp|head|director|managing director)\b/.test(t)) return "vp_director";
     if (/\b(manager|lead|principal)\b/.test(t)) return "manager";
     if (/\b(senior|sr\.?|staff)\b/.test(t)) return "senior";
     if (/\b(intern|trainee|student)\b/.test(t)) return "entry";
@@ -446,17 +445,21 @@
   function inferJobFunction(title) {
     const t = String(title || "").toLowerCase();
     if (!t) return "";
-    if (/\b(engineer|engineering|developer|software|frontend|backend|full stack|data scientist|devops|sre|architect|technology|technical)\b/.test(t)) return "engineering";
+    if (/\b(business owner|small business owner|independent business owner)\b/.test(t)) return "marketing_communications";
+    if (/\b(founder|co[-\s]?founder)\b/.test(t) && /\b(owner|chief|ceo|president|operator|operations)\b/.test(t)) return "operations";
+    if (/\b(owner|principal owner|franchise owner|attorney\s*\/\s*owner|consultant\s*\/\s*owner|coach\s*\/\s*owner)\b/.test(t)) return "engineering_technical_scientific";
+    if (/\b(engineer|engineering|scientist|research|r&d|laboratory|lab|technical|architect)\b/.test(t)) return "engineering_technical_scientific";
+    if (/\b(software|developer|frontend|backend|full stack|devops|sre|information technology|it|technology|systems|network|security|cyber|data)\b/.test(t)) return "information_technology";
     if (/\b(sales|account executive|business development|revenue|growth|partnership)\b/.test(t)) return "sales";
-    if (/\b(marketing|brand|demand generation|seo|content|communications)\b/.test(t)) return "marketing";
+    if (/\b(marketing|brand|demand generation|seo|content|communications|social media|media management)\b/.test(t)) return "marketing_communications";
     if (/\b(product|program manager|project manager|scrum)\b/.test(t)) return "product";
     if (/\b(finance|financial|accounting|controller|treasury|fp&a)\b/.test(t)) return "finance";
     if (/\b(hr|people|talent|recruit|human resources)\b/.test(t)) return "human_resources";
     if (/\b(founder|co[-\s]?founder|owner|chief|ceo|coo|president|operations|supply chain|logistics|procurement)\b/.test(t)) return "operations";
     if (/\b(legal|counsel|attorney|compliance)\b/.test(t)) return "legal";
-    if (/\b(customer success|support|client services|implementation)\b/.test(t)) return "customer_success";
+    if (/\b(customer success|support|client services|implementation)\b/.test(t)) return "customer_service";
     if (/\b(design|designer|ux|ui|creative)\b/.test(t)) return "design";
-    if (/\b(research|scientist|faculty|professor|teacher|instructor)\b/.test(t)) return "education";
+    if (/\b(faculty|professor|teacher|instructor|education|academic)\b/.test(t)) return "education";
     if (/\b(consultant|strategy|business analyst|analyst)\b/.test(t)) return "consulting";
     return "";
   }

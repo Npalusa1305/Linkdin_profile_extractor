@@ -33,11 +33,6 @@ const COLUMNS = [
   ["linkedinName", "LinkedIn Name"],
   ["firstName", "First Name"],
   ["lastName", "Last Name"],
-  ["emailDiscovery", "Email Discovered"],
-  ["emailDeliverability", "Email Deliverability"],
-  ["emailType", "Email Type"],
-  ["emailCatchAll", "Email Catch-all Score"],
-  ["emailAlternate", "Email Alternatives"],
   ["description", "Description"],
   ["organisationId", "Organisation ID"],
   ["organisationName", "Organisation"],
@@ -580,7 +575,7 @@ async function refresh() {
   log("info", "refresh complete", { leads: cachedLeads.length });
 }
 
-$("download").addEventListener("click", () => {
+$("download").addEventListener("click", async () => {
   log("info", "download clicked", { cachedLeads: cachedLeads.length });
   if (!cachedLeads.length) {
     log("debug", "download skipped with no cached leads");

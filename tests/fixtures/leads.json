@@ -1,0 +1,29 @@
+[
+  {
+    "id": "ACwAAExample",
+    "linkedinName": "Alex Founder, MBA",
+    "firstName": "Alex",
+    "lastName": "Founder",
+    "description": "Co-Founder and CTO",
+    "organisationId": "",
+    "organisationName": "Example Labs",
+    "organisationSalesNavLink": "https://www.linkedin.com/sales/company/12345",
+    "organisationWebsite": "",
+    "organisationSize": "",
+    "location": "Houston, Texas, United States",
+    "industry": "",
+    "currentRole": "Co-Founder and CTO",
+    "seniority": "partner_cxo",
+    "jobFunction": "engineering_technical_scientific",
+    "pastRoles": "",
+    "education": "",
+    "tenureAtCompany": "2 years 6 months",
+    "tenureInRole": "2 years 6 months",
+    "nameResolution": "Alex Founder, MBA",
+    "profileLink": "https://www.linkedin.com/in/ACwAAExample",
+    "salesNavLink": "https://www.linkedin.com/sales/lead/ACwAAExample,NAME_SEARCH,abcd",
+    "about": "Builder and operator.",
+    "sharedConnections": "",
+    "sharedConnectionNames": ""
+  }
+]
