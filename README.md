@@ -207,13 +207,12 @@ with the Excel MIME type.
 
 The workbook exports:
 
-`ID, LinkedIn Name, First Name, Last Name, Email Discovered, Email Deliverability,
-Email Type, Email Catch-all Score, Email Alternatives, Description,
-Organisation ID, Organisation, Organisation Sales Nav Link, Organisation Website,
-Organisation Size, Location, Industry, Current Role(s),
-Seniority, Job Function, Past Role(s), Education, Tenure at Company,
-Tenure in Role, Name Resolved?, Profile Link, Sales Navigator Profile Link, About,
-Shared Connections, Shared Connection Names`
+`ID, LinkedIn Name, First Name, Last Name, Description, Organisation ID,
+Organisation, Organisation Sales Nav Link, Organisation Website, Organisation
+Size, Location, Industry, Current Role(s), Seniority, Job Function,
+Past Role(s), Education, Tenure at Company, Tenure in Role, Name Resolved?,
+Profile Link, Sales Navigator Profile Link, About, Shared Connections,
+Shared Connection Names`
 
 ## Field Completeness
 
@@ -230,15 +229,12 @@ Fields that may be blank unless richer profile/detail payloads are loaded:
 
 - Past Role(s)
 - Education
-- Profile Link
 - Organisation Website
+- Organisation Size
 - Shared Connection Names
 
-Email fields are populated only when the observed payload actually contains an
-email or email metadata. The parser checks common email fields and bounded nested
-values on each lead object. Sales Navigator search payloads often do not provide
-email addresses, so these columns may still be blank without a separate
-authorized enrichment source.
+The default workbook export follows the 25-column LIX-style schema. Email
+discovery fields are not included in the exported workbook.
 
 ## Logging
 

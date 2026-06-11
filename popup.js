@@ -2,6 +2,7 @@
 const STORAGE_KEY = "snle_leads";
 const PENDING_COLLECTION_KEY = "snle_pending_collection";
 const COLLECTION_STATE_KEY = "snle_collection_state";
+const AUDIT_STORAGE_KEY = "snle_field_audit";
 const SETTINGS_STORAGE = "snle_popup_settings";
 const LOG_PREFIX = "[SNLE:popup]";
 
@@ -32,11 +33,6 @@ const COLUMNS = [
   ["linkedinName", "LinkedIn Name"],
   ["firstName", "First Name"],
   ["lastName", "Last Name"],
-  ["emailDiscovery", "Email Discovered"],
-  ["emailDeliverability", "Email Deliverability"],
-  ["emailType", "Email Type"],
-  ["emailCatchAll", "Email Catch-all Score"],
-  ["emailAlternate", "Email Alternatives"],
   ["description", "Description"],
   ["organisationId", "Organisation ID"],
   ["organisationName", "Organisation"],
@@ -339,7 +335,7 @@ function getStoredLeads() {
 
 function clearStoredLeads() {
   return new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_KEY]: {} }, () => {
+    chrome.storage.local.set({ [STORAGE_KEY]: {}, [AUDIT_STORAGE_KEY]: [] }, () => {
       const error = chrome.runtime.lastError && chrome.runtime.lastError.message;
       if (error) {
         log("error", "storage clear failed", { error: error });
@@ -579,7 +575,7 @@ async function refresh() {
   log("info", "refresh complete", { leads: cachedLeads.length });
 }
 
-$("download").addEventListener("click", () => {
+$("download").addEventListener("click", async () => {
   log("info", "download clicked", { cachedLeads: cachedLeads.length });
   if (!cachedLeads.length) {
     log("debug", "download skipped with no cached leads");
